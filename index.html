@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Alertă Viteză iOS</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: #111;
+      color: #fff;
+      margin: 0;
+      padding: 2rem 1.25rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 100vh;
+      text-align: center;
+      transition: background-color 0.2s;
+    }
+    body.danger {
+      background-color: #7f0000;
+    }
+    .speed-box {
+      margin: auto 0;
+    }
+    .speed {
+      font-size: 6rem;
+      font-weight: 800;
+      line-height: 1;
+    }
+    .unit {
+      font-size: 1.5rem;
+      opacity: 0.8;
+    }
+    .status {
+      margin-top: 0.75rem;
+      font-size: 0.95rem;
+      color: #aaa;
+    }
+    .controls {
+      width: 100%;
+      max-width: 360px;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    label {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #222;
+      padding: 0.85rem 1rem;
+      border-radius: 12px;
+      font-size: 1.1rem;
+    }
+    input {
+      width: 90px;
+      padding: 0.5rem;
+      font-size: 1.2rem;
+      font-weight: bold;
+      text-align: center;
+      border-radius: 8px;
+      border: none;
+      background: #333;
+      color: #fff;
+    }
+    button {
+      padding: 1rem;
+      font-size: 1.15rem;
+      font-weight: 700;
+      border: none;
+      border-radius: 14px;
+      background: #0a84ff;
+      color: #fff;
+      cursor: pointer;
+    }
+    button.stop {
+      background: #ff453a;
+    }
+  </style>
+</head>
+<body>
+  <div class="speed-box">
+    <div id="speedDisplay" class="speed">0</div>
+    <div class="unit">km/h</div>
+    <div id="status" class="status">Pregătit</div>
+  </div>
+
+  <div class="controls">
+    <label>
+      <span>Limită (km/h)</span>
+      <input id="speedLimitInput" type="number" inputmode="numeric" value="50" min="1" max="300" />
+    </label>
+    <button id="toggleBtn">Pornește</button>
+  </div>
+
+  <script>
+    const speedDisplay = document.getElementById("speedDisplay");
+    const statusEl = document.getElementById("status");
+    const speedLimitInput = document.getElementById("speedLimitInput");
+    const toggleBtn = document.getElementById("toggleBtn");
+
+    let watchId = null;
+    let audioCtx = null;
+    let wakeLock = null;
+    let lastBeepTime = 0;
+
+    // Deblocare audio la atingerea butonului pe iOS
+    function initAudio() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtx.state === "suspended") {
+        audioCtx.resume();
+      }
+      const buffer = audioCtx.createBuffer(1, 1, 22050);
+      const source = audioCtx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(audioCtx.destination);
+      source.start(0);
+    }
+
+    function playBeep(frequency = 980, durationMs = 250) {
+      if (!audioCtx) return;
+      if (audioCtx.state === "suspended") audioCtx.resume();
+
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+
+      osc.type = "triangle";
+      osc.frequency.value = frequency;
+
+      gain.gain.setValueAtTime(0.4, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + durationMs / 1000);
+
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      osc.start();
+      osc.stop(audioCtx.currentTime + durationMs / 1000);
+    }
+
+    async function requestWakeLock() {
+      if ("wakeLock" in navigator) {
+        try {
+          wakeLock = await navigator.wakeLock.request("screen");
+        } catch (err) {
+          console.log("WakeLock indisponibil:", err);
+        }
+      }
+    }
+
+    function releaseWakeLock() {
+      if (wakeLock) {
+        wakeLock.release();
+        wakeLock = null;
+      }
+    }
+
+    function startTracking() {
+      if (!("geolocation" in navigator)) {
+        statusEl.textContent = "GPS indisponibil";
+        return;
+      }
+
+      initAudio();
+      requestWakeLock();
+
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const speedMs = pos.coords.speed;
+          const limit = Number(speedLimitInput.value) || 50;
+          const speedKmh = speedMs !== null && speedMs >= 0 ? speedMs * 3.6 : 0;
+
+          speedDisplay.textContent = Math.round(speedKmh);
+          statusEl.textContent = `Acuratețe GPS: ±${Math.round(pos.coords.accuracy)} m`;
+
+          if (speedKmh > limit) {
+            document.body.classList.add("danger");
+            const now = Date.now();
+            if (now - lastBeepTime > 1100) {
+              playBeep();
+              lastBeepTime = now;
+            }
+          } else {
+            document.body.classList.remove("danger");
+          }
+        },
+        (err) => {
+          statusEl.textContent = `Eroare: ${err.message}`;
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 1000,
+          timeout: 5000,
+        }
+      );
+
+      toggleBtn.textContent = "Oprește";
+      toggleBtn.classList.add("stop");
+    }
+
+    function stopTracking() {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+      releaseWakeLock();
+      document.body.classList.remove("danger");
+      statusEl.textContent = "Oprit";
+      toggleBtn.textContent = "Pornește";
+      toggleBtn.classList.remove("stop");
+    }
+
+    toggleBtn.addEventListener("click", () => {
+      if (watchId === null) startTracking();
+      else stopTracking();
+    });
+  </script>
+</body>
+</html>
